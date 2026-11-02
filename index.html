@@ -1,0 +1,656 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Morph</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: two stacked spectrograms (before, after) as the instrument face; the size axis sits right under them, fine controls and human cues below. */
+  :root {
+    --bg: #e9eef0; --panel: #f6f9fa; --ink: #13222b; --mute: #55666f; --line: #c3d0d6; --accent: #0a5f86; --accent-ink: #ffffff; --lamp: #b25e00;
+    --f-display: "Barlow Condensed", "Arial Narrow", Impact, sans-serif;
+    --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg: #0d1519; --panel: #141f25; --ink: #dbe6ea; --mute: #8ea3ac; --line: #28383f; --accent: #f0b447; --accent-ink: #1a1203; --lamp: #f0b447; color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #0d1519; --panel: #141f25; --ink: #dbe6ea; --mute: #8ea3ac; --line: #28383f; --accent: #f0b447; --accent-ink: #1a1203; --lamp: #f0b447; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--f-body); padding-block: 20px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 980px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { font: 700 clamp(34px, 7vw, 54px)/0.95 var(--f-display); margin: 0; text-transform: uppercase; text-wrap: balance; }
+  h2 { font: 600 13px/1 var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+  .sub { color: var(--mute); margin: 8px 0 0; max-width: 64ch; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; min-width: 0; }
+  .scope { padding: 0; overflow: hidden; }
+  .scope-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); font: 12px var(--f-mono); color: var(--mute); }
+  .scope-head b { color: var(--ink); font-weight: 500; }
+  canvas { display: block; width: 100%; height: 150px; }
+  canvas + .scope-head { border-top: 1px solid var(--line); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, select, input[type=file]::file-selector-button { font: 500 14px var(--f-body); border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 4px; padding: 9px 14px; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button[aria-pressed=true] { outline: 2px solid var(--accent); outline-offset: 1px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px 24px; }
+  label.ctl, .ctl { display: grid; gap: 4px; font-size: 13px; color: var(--mute); }
+  .ctl .v { font: 13px var(--f-mono); color: var(--ink); display: flex; justify-content: space-between; gap: 8px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .size { display: grid; gap: 6px; }
+  .size .ends { display: flex; justify-content: space-between; font: 12px var(--f-mono); color: var(--mute); }
+  .size input { height: 28px; }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--ink); }
+  .note { font-size: 12.5px; color: var(--mute); }
+  #status { font: 12px var(--f-mono); color: var(--mute); min-height: 18px; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .two > div { min-width: 0; }
+  ul.cites { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 14px; }
+  cite { font-style: normal; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<main>
+  <header>
+    <h1>Voice Morph</h1>
+    <p class="sub">Change how big a voice sounds without changing what it says. Formants set the size of the throat and mouth; pitch sets how high the voice sings. Move them together for child to giant, or apart for stranger voices.</p>
+  </header>
+
+  <section class="panel scope" aria-label="Spectrograms">
+    <div class="scope-head"><span><b>Original</b></span><span id="hdPitch">pitch --</span></div>
+    <canvas id="c0" role="img" aria-label="Spectrogram of the original voice, frequency up, time to the right"></canvas>
+    <div class="scope-head"><span><b>Morphed</b></span><span id="hdMorph">formants x1.00, pitch 0 st</span></div>
+    <canvas id="c1" role="img" aria-label="Spectrogram of the morphed voice"></canvas>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <button id="playM" class="primary">Play morphed</button>
+      <button id="playO">Play original</button>
+      <button id="stop">Stop</button>
+      <!--DL--><button id="dl">Save WAV</button><!--/DL-->
+      <span id="status" role="status"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Source</h2>
+    <div class="row">
+      <button id="srcDemo" aria-pressed="true">Demo phrase</button>
+      <label class="row" style="gap:8px"><span class="note">Your speech (wav, mp3, m4a, ogg)</span><input id="file" type="file" accept="audio/*"></label>
+      <button id="rec">Record</button>
+    </div>
+    <p class="note" style="margin:10px 0 0">Speech works best, one voice, little noise, up to 30 seconds. Singing and music will sound rough.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Size</h2>
+    <div class="size">
+      <div class="ends"><span>child</span><span>adult</span><span>giant</span></div>
+      <input id="size" type="range" min="-1" max="1" step="0.05" value="0" aria-label="Size from child to giant">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="pKid">Child</button><button id="pAdult">Neutral</button><button id="pGiant">Giant</button><button id="pCreature">Small creature</button><button id="pDeep">Deep machine</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Fine controls</h2>
+    <div class="grid">
+      <label class="ctl"><span class="v"><span>Formant shift</span><span id="vForm">0 st</span></span><input id="form" type="range" min="-9" max="9" step="0.25" value="0"></label>
+      <label class="ctl"><span class="v"><span>Pitch shift</span><span id="vPitch">0 st</span></span><input id="pitch" type="range" min="-14" max="14" step="0.5" value="0"></label>
+      <div class="ctl"><label class="check"><input id="mono" type="checkbox"> Monotone (robot)</label>
+        <label class="ctl" style="margin-top:6px"><span class="v"><span>Monotone pitch</span><span id="vMono">110 Hz</span></span><input id="monoHz" type="range" min="60" max="300" step="1" value="110"></label></div>
+      <label class="ctl"><span>Carrier</span><select id="car"><option value="buzz">Pitch-tracked buzz</option><option value="noise">Whisper (noise)</option></select></label>
+      <label class="ctl"><span class="v"><span>Bands</span><span id="vBands">32</span></span><input id="nb" type="range" min="16" max="40" step="1" value="32"></label>
+      <label class="ctl"><span class="v"><span>Envelope smoothing</span><span id="vCut">50 Hz</span></span><input id="cut" type="range" min="15" max="120" step="1" value="50"></label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Human cues</h2>
+    <p class="note" style="margin:0 0 12px">Small imperfections that make a morphed voice read as a person, or deliberately as something close to one.</p>
+    <div class="grid">
+      <label class="check"><input id="cDrift" type="checkbox"> Pitch drift and jitter</label>
+      <label class="check"><input id="cVib" type="checkbox"> Vibrato on held vowels</label>
+      <label class="check"><input id="cWander" type="checkbox"> Formant wander</label>
+      <label class="check"><input id="cBreath" type="checkbox"> Breath noise</label>
+      <label class="ctl"><span class="v"><span>Cue strength</span><span id="vCue">1.0</span></span><input id="cue" type="range" min="0" max="2" step="0.1" value="1"></label>
+    </div>
+  </section>
+
+  <section class="panel two">
+    <div>
+      <h2>How it works</h2>
+      <p class="note" style="margin:0 0 8px">The voice is analyzed in narrow frequency bands. Each band's loudness over time is kept. The morphed voice rebuilds that loudness pattern through the same bands moved up or down in frequency, driven by a buzz at the pitch you chose. Moving the bands moves the formants; the buzz sets the pitch.</p>
+      <p class="note" style="margin:0">This is the channel vocoder idea from Dudley, 1940, used for formant warping.</p>
+    </div>
+    <div>
+      <h2>Checked and not checked</h2>
+      <p class="note" style="margin:0 0 8px">Checked in headless Chromium: formant shift moves the spectral envelope by the set amount while the pitch holds; pitch shift moves the pitch while the envelope holds; the cues add drift, vibrato and wander that are absent when switched off; renders repeat exactly.</p>
+      <p class="note" style="margin:0">Not checked: how it sounds, whether words stay understandable, or how natural it feels. Band resolution limits the warp: vowels may smear, and fricatives move with the warp. Nobody has listened to it.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Sources</h2>
+    <ul class="cites">
+      <li><cite>Dudley, H. (1940). The carrier nature of speech. <i>Bell System Technical Journal</i>, 19(4), 495&ndash;515.</cite> Channel vocoder analysis and synthesis.</li>
+      <li><cite>Glasberg, B. R. &amp; Moore, B. C. J. (1990). Derivation of auditory filter shapes from notched-noise data. <i>Hearing Research</i>, 47, 103&ndash;138.</cite> ERB-rate band spacing.</li>
+      <li><cite>Peterson, G. E. &amp; Barney, H. L. (1952). Control methods used in a study of the vowels. <i>Journal of the Acoustical Society of America</i>, 24(2), 175&ndash;184.</cite> Why child and adult formants differ; the size axis uses round ratios of my own, not their data.</li>
+    </ul>
+    <p class="note" style="margin:12px 0 0">A re-creation from published ideas, not a copy of any product. Size ratios and cue amounts are my choices, not measured values.</p>
+  </section>
+</main>
+
+<script>
+/* Dudley Vocoder: pure functions (no Web Audio). Works in Node and the browser. */
+(function (g) {
+  "use strict";
+
+  // Ten analyzer bands as pictured in Dudley, BSTJ 19(4) 1940, Fig. 10 caption:
+  // "ten frequency bands of 300 cycles width except that the lowest one extends from 0 to 250 cycles".
+  const DUDLEY_EDGES = [0, 250, 550, 850, 1150, 1450, 1750, 2050, 2350, 2650, 2950];
+
+  function dudleyBands() {
+    const out = [];
+    for (let i = 0; i < 10; i++) out.push({ lo: DUDLEY_EDGES[i], hi: DUDLEY_EDGES[i + 1] });
+    return out;
+  }
+
+  // Glasberg & Moore (1990) ERB-rate scale.
+  const erbRate = (f) => 21.4 * Math.log10(1 + 0.00437 * f);
+  const erbInv = (e) => (Math.pow(10, e / 21.4) - 1) / 0.00437;
+
+  function erbBands(n, lo, hi) {
+    const a = erbRate(lo), b = erbRate(hi), out = [];
+    for (let i = 0; i < n; i++) out.push({ lo: erbInv(a + ((b - a) * i) / n), hi: erbInv(a + ((b - a) * (i + 1)) / n) });
+    return out;
+  }
+
+  function median(a) {
+    const s = Array.from(a).sort((x, y) => x - y);
+    return s[s.length >> 1];
+  }
+
+  /**
+   * Frame-wise pitch and voicing estimate by normalized autocorrelation.
+   * x: Float32Array mono, sr: sample rate. Returns frames at 10 ms hop.
+   */
+  function trackPitch(x, sr, opt) {
+    opt = opt || {};
+    const fmin = opt.fmin || 70, fmax = opt.fmax || 400, vthr = opt.vthr || 0.5;
+    const d = Math.max(1, Math.round(sr / 11025)); // decimate to ~11 kHz with a box filter
+    const n = Math.floor(x.length / d), y = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let s = 0; for (let k = 0; k < d; k++) s += x[i * d + k]; y[i] = s / d; }
+    const fs = sr / d, hop = Math.round(0.01 * fs), win = Math.round(0.04 * fs);
+    const lmin = Math.floor(fs / fmax), lmax = Math.ceil(fs / fmin);
+    const nf = Math.max(2, Math.floor(n / hop));
+    const f0 = new Float32Array(nf), voiced = new Float32Array(nf), rms = new Float32Array(nf), conf = new Float32Array(nf);
+    let peak = 1e-9;
+    for (let f = 0; f < nf; f++) {
+      const s0 = f * hop - (win >> 1);
+      let e = 0;
+      for (let i = 0; i < win; i++) { const v = y[s0 + i] || 0; e += v * v; }
+      rms[f] = Math.sqrt(e / win); if (rms[f] > peak) peak = rms[f];
+    }
+    const r = new Float32Array(lmax + 2);
+    for (let f = 0; f < nf; f++) {
+      if (rms[f] < 0.03 * peak) continue;
+      const s0 = f * hop - (win >> 1);
+      let e0 = 0;
+      for (let i = 0; i < win; i++) { const v = y[s0 + i] || 0; e0 += v * v; }
+      let best = 0;
+      for (let l = lmin; l <= lmax + 1; l++) {
+        let c = 0, el = 0;
+        for (let i = 0; i < win; i++) { const a = y[s0 + i] || 0, b = y[s0 + i + l] || 0; c += a * b; el += b * b; }
+        r[l] = c / Math.sqrt(e0 * el + 1e-12);
+        if (r[l] > best) best = r[l];
+      }
+      // smallest lag that is a local maximum within 10% of the best: avoids octave-down errors
+      let lag = 0;
+      for (let l = lmin + 1; l <= lmax; l++) {
+        if (r[l] >= r[l - 1] && r[l] >= r[l + 1] && r[l] >= 0.9 * best) { lag = l; break; }
+      }
+      conf[f] = best;
+      if (lag && best >= vthr) {
+        const a = r[lag - 1], b = r[lag], c = r[lag + 1], den = a - 2 * b + c;
+        const off = den ? (0.5 * (a - c)) / den : 0;
+        f0[f] = fs / (lag + off);
+        voiced[f] = 1;
+      }
+    }
+    // drop isolated 1-frame voicing flips
+    for (let f = 1; f < nf - 1; f++) {
+      if (voiced[f] && !voiced[f - 1] && !voiced[f + 1]) { voiced[f] = 0; f0[f] = 0; }
+      else if (!voiced[f] && voiced[f - 1] && voiced[f + 1] && rms[f] >= 0.03 * peak) { voiced[f] = 1; f0[f] = (f0[f - 1] + f0[f + 1]) / 2; }
+    }
+    // median filter voiced f0, then fill unvoiced frames by holding the nearest voiced value
+    const sm = new Float32Array(nf);
+    for (let f = 0; f < nf; f++) {
+      if (!voiced[f]) continue;
+      const w = [];
+      for (let k = -2; k <= 2; k++) { const j = f + k; if (j >= 0 && j < nf && voiced[j]) w.push(f0[j]); }
+      sm[f] = median(w);
+    }
+    let last = 0;
+    for (let f = 0; f < nf; f++) { if (voiced[f]) last = sm[f]; else sm[f] = last; }
+    last = 0;
+    for (let f = nf - 1; f >= 0; f--) { if (voiced[f]) last = sm[f]; else if (!sm[f]) sm[f] = last; }
+    let med = 0, cnt = 0; for (let f = 0; f < nf; f++) if (voiced[f]) { med += sm[f]; cnt++; }
+    const fallback = cnt ? med / cnt : 110;
+    for (let f = 0; f < nf; f++) if (!sm[f]) sm[f] = fallback;
+    return { hop: hop / fs, f0: sm, voiced, rms, conf, medianF0: fallback, voicedShare: cnt / nf };
+  }
+
+  // 3-frame box smoothing of a 0/1 track so gates ramp over about 30 ms instead of clicking
+  function smoothTrack(v, passes) {
+    let a = Float32Array.from(v);
+    for (let p = 0; p < (passes || 1); p++) {
+      const b = new Float32Array(a.length);
+      for (let i = 0; i < a.length; i++) b[i] = ((a[i - 1] ?? a[i]) + a[i] + (a[i + 1] ?? a[i])) / 3;
+      a = b;
+    }
+    return a;
+  }
+
+  // Equalizer: ten faders sit at the centers of Dudley's ten bands. Gain at any frequency is interpolated in log-f, flat beyond the ends.
+  const EQ_CENTERS = [125, 400, 700, 1000, 1300, 1600, 1900, 2200, 2500, 2800];
+  function eqGainDb(db, f) {
+    if (!db) return 0;
+    if (f <= EQ_CENTERS[0]) return db[0];
+    if (f >= EQ_CENTERS[9]) return db[9];
+    let i = 0; while (f > EQ_CENTERS[i + 1]) i++;
+    const t = Math.log(f / EQ_CENTERS[i]) / Math.log(EQ_CENTERS[i + 1] / EQ_CENTERS[i]);
+    return db[i] + (db[i + 1] - db[i]) * t;
+  }
+
+
+  // ---- human cues for the voice morph (deterministic) ----
+  function rng(seed) { let a = seed >>> 0 || 1; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  /** Low-pass filtered Gaussian noise at frame rate 1/hop, normalized to unit standard deviation. */
+  function smoothNoise(n, hop, tau, seed) {
+    const r = rng(seed), out = new Float32Array(n), a = Math.exp(-hop / tau); let y = 0;
+    const g = () => { let u = 0; for (let i = 0; i < 6; i++) u += r(); return (u - 3) * Math.SQRT2; };
+    for (let i = 0; i < n + 200; i++) { y = a * y + (1 - a) * g(); if (i >= 200) out[i - 200] = y; }
+    let m = 0, v = 0; for (let i = 0; i < n; i++) m += out[i]; m /= n; for (let i = 0; i < n; i++) v += (out[i] - m) ** 2; const sd = Math.sqrt(v / n) || 1;
+    for (let i = 0; i < n; i++) out[i] = (out[i] - m) / sd; return out;
+  }
+  /** Multipliers on f0 (per pitch frame): slow drift, fast jitter, and vibrato that fades in after 250 ms of continuous voicing. */
+  function pitchCues(voiced, hop, o) {
+    const n = voiced.length, mul = new Float32Array(n).fill(1), st = o.strength == null ? 1 : o.strength, seed = o.seed || 7;
+    const dr = smoothNoise(n, hop, 0.8, seed), ji = smoothNoise(n, hop, 0.03, seed + 1); let run = 0;
+    for (let i = 0; i < n; i++) {
+      run = voiced[i] > 0.5 ? run + hop : 0; let cents = 0;
+      if (o.drift) cents += st * (12 * dr[i] + 4 * ji[i]);
+      if (o.vibrato) { const fade = Math.min(1, Math.max(0, (run - 0.25) / 0.2)); cents += st * 28 * fade * Math.sin(2 * Math.PI * 5.4 * i * hop); }
+      mul[i] = Math.pow(2, cents / 1200);
+    }
+    return mul;
+  }
+  /** Slow wander of the formant warp, in octaves, as a multiplier curve. */
+  function warpWander(n, hop, strength, seed) { const z = smoothNoise(n, hop, 0.5, seed || 11), m = new Float32Array(n); for (let i = 0; i < n; i++) m[i] = Math.pow(2, 0.045 * strength * z[i]); return m; }
+  /** Size axis: -1 child, 0 adult, +1 giant. Returns the coupled formant ratio and pitch shift in semitones. */
+  function sizeToMorph(x) { return { warp: Math.pow(2, -0.5 * x), semis: Math.round(-10 * x * 2) / 2 }; }
+
+  // Chord ratios for the modern external-carrier mode
+  const CHORDS = { power: [1, 1.5, 2, 3], minor7: [1, 1.1892, 1.4983, 1.7818], major7: [1, 1.2599, 1.4983, 1.8877], octaves: [0.5, 1, 2, 4] };
+
+  function wavEncode(samples, sr) {
+    const n = samples.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVEfmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+    return buf;
+  }
+
+  g.VocoderCore = { DUDLEY_EDGES, dudleyBands, erbRate, erbInv, erbBands, trackPitch, smoothTrack, rng, smoothNoise, pitchCues, warpWander, sizeToMorph, EQ_CENTERS, eqGainDb, CHORDS, wavEncode };
+  if (typeof module !== "undefined") module.exports = g.VocoderCore;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
+</script>
+<script>
+/* Dudley Vocoder: Web Audio engine. Everything renders offline so playback, display and WAV export share one buffer. */
+(function (g) {
+  "use strict";
+  const C = g.VocoderCore;
+  const SR = 44100;
+
+  function bandFilter(ctx, band, qScale) {
+    const a = ctx.createBiquadFilter(), b = ctx.createBiquadFilter();
+    if (band.lo <= 0) {
+      a.type = b.type = "lowpass"; a.frequency.value = b.frequency.value = band.hi; a.Q.value = b.Q.value = 0.707;
+    } else {
+      const fc = Math.sqrt(band.lo * band.hi), q = (fc / (band.hi - band.lo)) * (qScale || 1);
+      a.type = b.type = "bandpass"; a.frequency.value = b.frequency.value = fc; a.Q.value = b.Q.value = q;
+    }
+    a.connect(b);
+    return { in: a, out: b, nodes: [a, b], fc: band.lo <= 0 ? band.hi : Math.sqrt(band.lo * band.hi) };
+  }
+
+  // Full-wave rectifier, two-pole smoothing, scaled so a steady sine reads its amplitude.
+  function envelope(ctx, from, cutoff) {
+    const ws = ctx.createWaveShaper(); ws.curve = new Float32Array([1, 0, 1]);
+    const l1 = ctx.createBiquadFilter(), l2 = ctx.createBiquadFilter(), mk = ctx.createGain();
+    l1.type = l2.type = "lowpass"; l1.frequency.value = l2.frequency.value = cutoff; l1.Q.value = l2.Q.value = 0.707;
+    mk.gain.value = Math.PI / 2;
+    from.connect(ws); ws.connect(l1); l1.connect(l2); l2.connect(mk);
+    return mk;
+  }
+
+  function noiseBuffer(ctx, secs) {
+    const b = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * secs), ctx.sampleRate), d = b.getChannelData(0);
+    let s = 12345;
+    for (let i = 0; i < d.length; i++) { s = (s * 1664525 + 1013904223) >>> 0; d[i] = (s / 2147483648 - 1) * 0.9; }
+    return b;
+  }
+  function noiseSrc(ctx, buf) { const n = ctx.createBufferSource(); n.buffer = buf; n.loop = true; n.start(0); return n; }
+
+  function monoIn(ctx, buf) {
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const m = ctx.createGain(); m.channelCount = 1; m.channelCountMode = "explicit"; m.channelInterpretation = "speakers";
+    src.connect(m); src.start(0);
+    return m;
+  }
+
+  function offlineFor(buf) { return new OfflineAudioContext(1, Math.ceil(buf.duration * SR), SR); }
+
+  function normalize(d, peak) {
+    let m = 0; for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > m) m = a; }
+    if (m > 1e-9) { const k = peak / m; for (let i = 0; i < d.length; i++) d[i] *= k; }
+    return d;
+  }
+
+  /**
+   * cfg: { bands:[{lo,hi}], qScale, envCut, carrier:'buzz'|'chord'|'noise', hard:boolean,
+   *        semis, monotone, monoHz, chordRoot, chordType, hissLevel, sibilance }
+   * pitch: result of trackPitch for buf.
+   */
+  async function render(buf, pitch, cfg) {
+    // The vocoded bands come out far quieter than the original speech (a pulse carrier has little energy per band), while the sibilance
+    // path is at natural level. Render once without sibilance, level the bands to the speech, then add sibilance at natural level.
+    if (cfg.sibilance > 0 && cfg._k == null) {
+      const raw = await render(buf, pitch, Object.assign({}, cfg, { sibilance: 0, _raw: true })), a = raw.getChannelData(0), x = buf.getChannelData(0);
+      let ea = 0, ex = 0; for (let i = 0; i < a.length; i++) ea += a[i] * a[i]; for (let i = 0; i < x.length; i++) ex += x[i] * x[i];
+      ea /= a.length; ex /= x.length; cfg = Object.assign({}, cfg, { _k: Math.min(1000, Math.sqrt(ex / (ea + 1e-20))) });
+    }
+    const ctx = offlineFor(buf), dur = buf.duration;
+    const input = monoIn(ctx, buf);
+    const out = ctx.createGain(); out.gain.value = 1; out.connect(ctx.destination);
+    const bands = ctx.createGain(); bands.gain.value = cfg._k || 1; bands.connect(out);
+    const nz = noiseBuffer(ctx, 2);
+    const shift = Math.pow(2, (cfg.semis || 0) / 12);
+    const nF = pitch.f0.length, T = nF * pitch.hop;
+    const f0c = new Float32Array(nF);
+    for (let i = 0; i < nF; i++) f0c[i] = Math.max(20, Math.min(ctx.sampleRate / 2.5, (cfg.monotone ? cfg.monoHz || 110 : pitch.f0[i]) * shift));
+    const vSrc = cfg.hard ? pitch.voiced : C.smoothTrack(pitch.voiced, 2);
+    const vc = Float32Array.from(vSrc), uc = Float32Array.from(vSrc, (v) => 1 - v);
+
+    const car = ctx.createGain(); car.gain.value = 1;
+    // White noise spreads its power over the whole spectrum; a buzz packs it into the passband. Scale the hiss to the passband.
+    const top = cfg.bands[cfg.bands.length - 1].hi, hissK = Math.sqrt(ctx.sampleRate / 2 / top);
+    if (cfg.carrier === "buzz") {
+      // pulse-like spectrum (amplitude 1/sqrt(n)), closer to a relaxation oscillator than a sawtooth
+      const H = 200, re = new Float32Array(H + 1), im = new Float32Array(H + 1);
+      for (let n = 1; n <= H; n++) im[n] = 1 / Math.sqrt(n);
+      const o = ctx.createOscillator(); o.setPeriodicWave(ctx.createPeriodicWave(re, im)); o.frequency.setValueCurveAtTime(f0c, 0, T); o.start(0);
+      const gv = ctx.createGain(); gv.gain.setValueCurveAtTime(vc, 0, T);
+      o.connect(gv); gv.connect(car);
+      const gu = ctx.createGain(); gu.gain.setValueCurveAtTime(uc, 0, T);
+      const k = ctx.createGain(); k.gain.value = (cfg.hissLevel == null ? 1 : cfg.hissLevel) * hissK;
+      noiseSrc(ctx, nz).connect(gu); gu.connect(k); k.connect(car);
+      if (cfg.breath > 0) { const bk = ctx.createGain(); bk.gain.value = cfg.breath * hissK; noiseSrc(ctx, nz).connect(bk); bk.connect(car); }
+    } else if (cfg.carrier === "chord") {
+      const ratios = C.CHORDS[cfg.chordType || "minor7"], root = cfg.chordRoot || 130.81;
+      ratios.forEach((r, i) => {
+        [-1, 1].forEach((sg) => {
+          const o = ctx.createOscillator(); o.type = "sawtooth"; o.frequency.value = root * r; o.detune.value = sg * (5 + i * 1.5); o.start(0);
+          const gn = ctx.createGain(); gn.gain.value = 0.5 / ratios.length; o.connect(gn); gn.connect(car);
+        });
+      });
+      const gu = ctx.createGain(); gu.gain.setValueCurveAtTime(uc, 0, T);
+      const k = ctx.createGain(); k.gain.value = (cfg.hissLevel == null ? 0.6 : cfg.hissLevel) * hissK;
+      noiseSrc(ctx, nz).connect(gu); gu.connect(k); k.connect(car);
+    } else {
+      noiseSrc(ctx, nz).connect(car);
+    }
+
+    cfg.bands.forEach((band) => {
+      const a = bandFilter(ctx, band, cfg.qScale), s = bandFilter(ctx, band, cfg.qScale);
+      // Voice morph: move the synthesis filters up or down in frequency, leaving the analysis bands and the carrier pitch alone.
+      const wp = cfg.warp == null ? 1 : cfg.warp, maxF = ctx.sampleRate * 0.45;
+      if (cfg.warpCurve && cfg.warpCurve.length > 1) {
+        const cur = Float32Array.from(cfg.warpCurve, (m) => Math.min(maxF, Math.max(30, s.fc * wp * m)));
+        s.nodes.forEach((nd) => nd.frequency.setValueCurveAtTime(cur, 0, T));
+      } else if (wp !== 1) s.nodes.forEach((nd) => { nd.frequency.value = Math.min(maxF, Math.max(30, s.fc * wp)); });
+      input.connect(a.in);
+      const env = envelope(ctx, a.out, cfg.envCut);
+      const sg = ctx.createGain(); sg.gain.value = 0;
+      env.connect(sg.gain);
+      const eq = ctx.createGain(); eq.gain.value = Math.pow(10, C.eqGainDb(cfg.eqDb, Math.sqrt(Math.max(band.lo, 50) * band.hi)) / 20);
+      car.connect(s.in); s.out.connect(sg); sg.connect(eq); eq.connect(bands);
+    });
+
+    if (cfg.sibilance > 0) {
+      const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 5000; hp.Q.value = 0.707;
+      input.connect(hp);
+      const env = envelope(ctx, hp, 80);
+      const n = noiseSrc(ctx, nz), nh = ctx.createBiquadFilter(); nh.type = "highpass"; nh.frequency.value = 5000;
+      const sg = ctx.createGain(); sg.gain.value = 0; env.connect(sg.gain);
+      const lv = ctx.createGain(); lv.gain.value = cfg.sibilance * 1.8; // 1 is the natural level of the speech above 5 kHz
+      n.connect(nh); nh.connect(sg); sg.connect(lv); lv.connect(out);
+    }
+
+    const r = await ctx.startRendering();
+    const d = new Float32Array(r.getChannelData(0));
+    if (!cfg._raw) normalize(d, 0.89);
+    const ob = new AudioBuffer({ length: d.length, numberOfChannels: 1, sampleRate: SR });
+    ob.copyToChannel(d, 0);
+    return ob;
+  }
+
+  /** Channel envelopes at 100 Hz, for the display. Returns {n, frames, data[frame*n+band]}. */
+  async function envelopes(buf, cfg) {
+    const n = cfg.bands.length, len = Math.ceil(buf.duration * SR);
+    const ctx = new OfflineAudioContext(n, len, SR);
+    const input = monoIn(ctx, buf), merger = ctx.createChannelMerger(n);
+    cfg.bands.forEach((band, i) => {
+      const a = bandFilter(ctx, band, cfg.qScale); input.connect(a.in);
+      envelope(ctx, a.out, cfg.envCut).connect(merger, 0, i);
+    });
+    merger.connect(ctx.destination);
+    const r = await ctx.startRendering();
+    const hop = Math.round(SR / 100), frames = Math.floor(len / hop), data = new Float32Array(frames * n);
+    for (let b = 0; b < n; b++) {
+      const ch = r.getChannelData(b);
+      for (let f = 0; f < frames; f++) { let m = 0; for (let k = 0; k < hop; k += 4) m += Math.abs(ch[f * hop + k]); data[f * n + b] = m / (hop / 4); }
+    }
+    return { n, frames, data };
+  }
+
+  /** Synthetic speech-like phrase used as the default modulator ("see saw sue, ay-oh"). */
+  async function demo() {
+    const F = { i: [270, 2290, 3010], a: [730, 1090, 2440], u: [300, 870, 2240], e: [530, 1840, 2480], o: [570, 840, 2410] };
+    const segs = [["s", 0.2], ["v", "i", 0.42], ["s", 0.16], ["v", "a", 0.46], ["s", 0.16], ["v", "u", 0.42], ["x", 0.14], ["v", "e", 0.36], ["v", "o", 0.55], ["x", 0.3]];
+    const total = segs.reduce((t, s) => t + s[s.length - 1], 0);
+    const ctx = new OfflineAudioContext(1, Math.ceil(total * SR), SR);
+    const src = ctx.createOscillator(); src.type = "sawtooth";
+    const nF = 400, curve = new Float32Array(nF);
+    for (let i = 0; i < nF; i++) { const t = (i / nF) * total; curve[i] = 122 * (1 + 0.1 * Math.sin((2 * Math.PI * t) / 1.9)) - 9 * t; }
+    src.frequency.setValueCurveAtTime(curve, 0, total); src.start(0);
+    const vg = ctx.createGain(); vg.gain.value = 0; src.connect(vg);
+    const fm = [0, 1, 2].map((k) => { const b = ctx.createBiquadFilter(); b.type = "bandpass"; b.Q.value = [8, 10, 12][k]; b.frequency.value = 500; const g2 = ctx.createGain(); g2.gain.value = [1, 0.6, 0.3][k]; vg.connect(b); b.connect(g2); g2.connect(ctx.destination); return b; });
+    const nb = noiseBuffer(ctx, 1), nsrc = noiseSrc(ctx, nb), nbp = ctx.createBiquadFilter(); nbp.type = "bandpass"; nbp.frequency.value = 6200; nbp.Q.value = 1.2;
+    const fg = ctx.createGain(); fg.gain.value = 0; nsrc.connect(nbp); nbp.connect(fg); fg.connect(ctx.destination);
+    let t = 0;
+    segs.forEach((s) => {
+      const d = s[s.length - 1];
+      if (s[0] === "s") { fg.gain.setTargetAtTime(0.9, t, 0.01); fg.gain.setTargetAtTime(0, t + d - 0.03, 0.01); }
+      if (s[0] === "v") {
+        fm.forEach((b, k) => b.frequency.setTargetAtTime(F[s[1]][k], t, 0.03));
+        vg.gain.setTargetAtTime(0.5, t, 0.012); vg.gain.setTargetAtTime(0.0, t + d - 0.02, 0.012);
+      }
+      t += d;
+    });
+    const r = await ctx.startRendering();
+    const d = new Float32Array(r.getChannelData(0)); normalize(d, 0.7);
+    const ob = new AudioBuffer({ length: d.length, numberOfChannels: 1, sampleRate: SR }); ob.copyToChannel(d, 0);
+    return ob;
+  }
+
+  /** Live, hand-played synthesizer in the manner of the 1939 Voder: ten keys, a wrist bar (buzz or hiss), a pitch pedal. */
+  function voder(ctx, dest) {
+    const bands = C.dudleyBands(), master = ctx.createGain(), lim = ctx.createDynamicsCompressor();
+    master.gain.value = 0.5; lim.threshold.value = -12; lim.knee.value = 6; lim.ratio.value = 12; lim.attack.value = 0.003; lim.release.value = 0.12;
+    master.connect(lim); lim.connect(dest);
+    const BUZZ = 5; // the peak-normalized pulse wave is weak per band; bring one key of buzz up to the level of one key of hiss
+    const H = 200, re = new Float32Array(H + 1), im = new Float32Array(H + 1);
+    for (let n = 1; n <= H; n++) im[n] = 1 / Math.sqrt(n);
+    const osc = ctx.createOscillator(); osc.setPeriodicWave(ctx.createPeriodicWave(re, im)); osc.frequency.value = 110; osc.start();
+    const nz = noiseSrc(ctx, noiseBuffer(ctx, 2)), hissK = Math.sqrt(ctx.sampleRate / 2 / 2950);
+    const buzzG = ctx.createGain(), hissG = ctx.createGain(), car = ctx.createGain();
+    buzzG.gain.value = BUZZ; hissG.gain.value = 0;
+    osc.connect(buzzG); nz.connect(hissG); buzzG.connect(car); hissG.connect(car);
+    const keys = bands.map((b) => {
+      const f = bandFilter(ctx, b, 1), kg = ctx.createGain(), eq = ctx.createGain();
+      kg.gain.value = 0; car.connect(f.in); f.out.connect(kg); kg.connect(eq); eq.connect(master);
+      return { kg, eq };
+    });
+    const T = (t) => (t == null ? ctx.currentTime : t);
+    return {
+      keys: keys.length, master,
+      setKey(i, on, t) { keys[i].kg.gain.setTargetAtTime(on ? 1 : 0, T(t), 0.012); },
+      setSource(mode, t) { buzzG.gain.setTargetAtTime(mode === "hiss" ? 0 : BUZZ, T(t), 0.006); hissG.gain.setTargetAtTime(mode === "hiss" ? hissK : 0, T(t), 0.006); },
+      setPitch(hz, t) { osc.frequency.setTargetAtTime(hz, T(t), 0.03); },
+      setEq(db) { keys.forEach((k, i) => { k.eq.gain.value = Math.pow(10, db[i] / 20); }); }
+    };
+  }
+
+  g.VocoderEngine = { voder, SR, render, envelopes, demo };
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
+</script>
+<script>
+(function () {
+  "use strict";
+  const C = VocoderCore, E = VocoderEngine, RATE = E.SR;
+  const $ = (id) => document.getElementById(id);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const S = { buf: null, pitch: null, out: null, token: 0, play: null, spec0: null, spec1: null };
+  const status = (t) => { $("status").textContent = t; };
+
+  function morphNow() {
+    const strength = +$("cue").value;
+    return { formSt: +$("form").value, semis: +$("pitch").value, mono: $("mono").checked, monoHz: +$("monoHz").value, carrier: $("car").value, nb: +$("nb").value, cut: +$("cut").value,
+      drift: $("cDrift").checked, vib: $("cVib").checked, wander: $("cWander").checked, breath: $("cBreath").checked, strength };
+  }
+  function buildCfg(m, pitch) {
+    const warp = Math.pow(2, m.formSt / 12), n = pitch.f0.length, T = n * pitch.hop;
+    const mod = { hop: pitch.hop, voiced: pitch.voiced, f0: Float32Array.from(pitch.f0), medianF0: pitch.medianF0 };
+    if (m.drift || m.vib) { const mul = C.pitchCues(pitch.voiced, pitch.hop, { drift: m.drift, vibrato: m.vib, strength: m.strength, seed: 7 }); for (let i = 0; i < n; i++) mod.f0[i] *= mul[i]; }
+    const cfg = { mode: "modern", bands: C.erbBands(m.nb, 90, 7800), qScale: 1.1, envCut: m.cut, carrier: m.carrier, hard: false, semis: m.semis, monotone: m.mono, monoHz: m.monoHz,
+      hissLevel: 0.3, sibilance: 0.3, warp, warpCurve: m.wander ? C.warpWander(n, pitch.hop, m.strength, 11) : null, breath: m.breath ? 0.12 * m.strength : 0 };
+    return { cfg, pitch: mod };
+  }
+  async function renderMorph(m) { const b = buildCfg(m || morphNow(), S.pitch); return E.render(S.buf, b.pitch, b.cfg); }
+
+  // ---------- spectrogram ----------
+  function fft(re, im) {
+    const N = re.length;
+    for (let i = 1, j = 0; i < N; i++) { let bit = N >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= N; len <<= 1) { const ang = -2 * Math.PI / len, wr0 = Math.cos(ang), wi0 = Math.sin(ang); for (let i = 0; i < N; i += len) { let wr = 1, wi = 0; for (let k = 0; k < len / 2; k++) { const a = i + k, b = a + len / 2, tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr; re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti; const nw = wr * wr0 - wi * wi0; wi = wr * wi0 + wi * wr0; wr = nw; } } }
+  }
+  const NB = 96, FLO = 80, FHI = 8000;
+  function spectro(buf) {
+    const x = buf.getChannelData(0), sr = buf.sampleRate, N = 1024, hop = Math.round(sr / 100), nf = Math.max(1, Math.floor((x.length - N) / hop)), out = new Float32Array(nf * NB), re = new Float64Array(N), im = new Float64Array(N);
+    const edges = []; for (let b = 0; b <= NB; b++) edges.push(FLO * Math.pow(FHI / FLO, b / NB));
+    for (let f = 0; f < nf; f++) {
+      for (let i = 0; i < N; i++) { re[i] = (x[f * hop + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); im[i] = 0; }
+      fft(re, im);
+      for (let b = 0; b < NB; b++) { const k0 = Math.floor(edges[b] * N / sr), k1 = Math.max(k0 + 1, Math.ceil(edges[b + 1] * N / sr)); let p = 0; for (let k = k0; k < k1; k++) p = Math.max(p, re[k] * re[k] + im[k] * im[k]); out[f * NB + b] = p; }
+    }
+    return { nf, data: out };
+  }
+  function draw(playhead) {
+    [["c0", S.spec0, S.buf], ["c1", S.spec1, S.out]].forEach(([id, sp, buf]) => {
+      const c = $(id), dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      const g = c.getContext("2d"); g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = css("--panel"); g.fillRect(0, 0, w, h);
+      if (!sp || !S.max) return;
+      const cw = w / sp.nf, rh = h / NB; g.fillStyle = css("--accent");
+      for (let b = 0; b < NB; b++) for (let f = 0; f < sp.nf; f++) { const db = 10 * Math.log10(sp.data[f * NB + b] / S.max + 1e-12), v = Math.max(0, Math.min(1, (db + 55) / 55)); if (v < 0.04) continue; g.globalAlpha = v * v * 0.95 + 0.04; g.fillRect(f * cw, h - (b + 1) * rh, Math.ceil(cw) + 0.5, Math.ceil(rh) + 0.5); }
+      g.globalAlpha = 1; g.strokeStyle = css("--line"); g.lineWidth = dpr; g.fillStyle = css("--mute"); g.font = 10 * dpr + "px " + css("--f-mono");
+      [100, 1000, 4000].forEach((f) => { const y = h - (Math.log(f / FLO) / Math.log(FHI / FLO)) * h; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.fillText(f >= 1000 ? f / 1000 + " k" : f, 4, y - 3); });
+      if (playhead > 0 && buf) { g.strokeStyle = css("--ink"); g.lineWidth = 2 * dpr; const x = (playhead / buf.duration) * w; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+    });
+  }
+
+  // ---------- refresh ----------
+  function labels() {
+    const m = morphNow(), warp = Math.pow(2, m.formSt / 12);
+    $("vForm").textContent = (m.formSt > 0 ? "+" : "") + m.formSt + " st"; $("vPitch").textContent = (m.semis > 0 ? "+" : "") + m.semis + " st"; $("vMono").textContent = $("monoHz").value + " Hz";
+    $("vBands").textContent = m.nb; $("vCut").textContent = m.cut + " Hz"; $("vCue").textContent = m.strength.toFixed(1);
+    $("hdMorph").textContent = "formants ×" + warp.toFixed(2) + ", pitch " + (m.semis > 0 ? "+" : "") + m.semis + " st" + (m.mono ? ", monotone" : "");
+    $("monoHz").disabled = !m.mono;
+  }
+  async function refresh() {
+    if (!S.buf) return; const my = ++S.token, t0 = performance.now(); labels(); status("rendering...");
+    try {
+      const out = await renderMorph(); if (my !== S.token) return; S.out = out;
+      if (!S.spec0) S.spec0 = spectro(S.buf); S.spec1 = spectro(out);
+      let mx = 1e-20; for (const sp of [S.spec0, S.spec1]) for (let i = 0; i < sp.data.length; i++) if (sp.data[i] > mx) mx = sp.data[i]; S.max = mx;
+      draw(0); status("rendered " + out.duration.toFixed(1) + " s in " + Math.round(performance.now() - t0) + " ms"); window.__ready = (window.__ready || 0) + 1;
+    } catch (e) { status("render failed: " + e.message); console.error(e); }
+  }
+  let timer = 0; const later = () => { clearTimeout(timer); labels(); timer = setTimeout(refresh, 250); };
+  async function setSource(buf) {
+    stop(); S.buf = buf; S.pitch = C.trackPitch(buf.getChannelData(0), buf.sampleRate); S.spec0 = null;
+    $("hdPitch").textContent = "pitch median " + Math.round(S.pitch.medianF0) + " Hz, voiced " + Math.round(S.pitch.voicedShare * 100) + "%"; await refresh();
+  }
+
+  // ---------- playback ----------
+  let ac = null;
+  function stop() { if (S.play) { try { S.play.src.stop(); } catch (e) {} cancelAnimationFrame(S.play.raf); S.play = null; } ["playM", "playO"].forEach((i) => $(i).setAttribute("aria-pressed", "false")); draw(0); }
+  function play(which) {
+    const buf = which === "m" ? S.out : S.buf; if (!buf) return; stop();
+    try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch (e) { status("Audio is not available here."); return; }
+    const src = ac.createBufferSource(); src.buffer = buf; src.connect(ac.destination); const t0 = ac.currentTime; src.start(); const st = { src, raf: 0 }; S.play = st;
+    $(which === "m" ? "playM" : "playO").setAttribute("aria-pressed", "true");
+    const tick = () => { if (S.play !== st) return; const t = ac.currentTime - t0; if (t >= buf.duration) { stop(); return; } draw(t); st.raf = requestAnimationFrame(tick); };
+    src.onended = () => { if (S.play === st) stop(); }; tick();
+  }
+  async function decodeFile(ab) {
+    let b = await new OfflineAudioContext(1, 1, E.SR).decodeAudioData(ab); const max = Math.floor(b.sampleRate * 30);
+    if (b.length > max) { const nb = new AudioBuffer({ length: max, numberOfChannels: b.numberOfChannels, sampleRate: b.sampleRate }); for (let c = 0; c < b.numberOfChannels; c++) nb.copyToChannel(b.getChannelData(c).subarray(0, max), c); b = nb; } return b;
+  }
+  $("srcDemo").onclick = async () => { $("srcDemo").setAttribute("aria-pressed", "true"); await setSource(await E.demo()); };
+  $("file").onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { status("decoding..."); const b = await decodeFile(await f.arrayBuffer()); $("srcDemo").setAttribute("aria-pressed", "false"); await setSource(b); } catch (err) { status("Could not decode that file. Try wav or mp3."); } };
+  let rec = null;
+  $("rec").onclick = async () => {
+    if (rec) { rec.stop(); return; }
+    try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }), chunks = []; rec = new MediaRecorder(st); rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.onstop = async () => { st.getTracks().forEach((t) => t.stop()); $("rec").textContent = "Record"; rec = null; try { await setSource(await decodeFile(await new Blob(chunks).arrayBuffer())); $("srcDemo").setAttribute("aria-pressed", "false"); } catch (e) { status("Recording could not be decoded."); } };
+      rec.start(); $("rec").textContent = "Stop recording"; status("recording..."); } catch (e) { rec = null; status("Microphone is not available in this view. Use the file button instead."); }
+  };
+  $("playM").onclick = () => play("m"); $("playO").onclick = () => play("o"); $("stop").onclick = stop;
+  /*DL*/ if ($("dl")) $("dl").onclick = () => { if (!S.out) return; const url = URL.createObjectURL(new Blob([C.wavEncode(S.out.getChannelData(0), S.out.sampleRate)], { type: "audio/wav" })); const a = document.createElement("a"); a.href = url; a.download = "voice-morph.wav"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 2000); }; /*/DL*/
+
+  // ---------- controls ----------
+  function setSize(x) { const m = C.sizeToMorph(x); $("form").value = Math.round(Math.log2(m.warp) * 12 * 4) / 4; $("pitch").value = m.semis; $("size").value = x; later(); }
+  $("size").addEventListener("input", () => setSize(+$("size").value));
+  const PRESET = { pKid: () => setSize(-1), pAdult: () => { $("mono").checked = false; setSize(0); }, pGiant: () => setSize(1),
+    pCreature: () => { $("form").value = 8; $("pitch").value = 12; $("size").value = -1; later(); }, pDeep: () => { $("form").value = -5; $("pitch").value = -12; $("size").value = 1; $("mono").checked = true; $("monoHz").value = 70; later(); } };
+  Object.keys(PRESET).forEach((id) => ($(id).onclick = PRESET[id]));
+  ["form", "pitch", "mono", "monoHz", "car", "nb", "cut", "cDrift", "cVib", "cWander", "cBreath", "cue"].forEach((id) => $(id).addEventListener("input", later));
+  window.addEventListener("resize", () => draw(0));
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw(0));
+  new MutationObserver(() => draw(0)).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  window.__vm = { S, C, E, morphNow, buildCfg, renderMorph, setSource, refresh, setSize, ready: () => window.__ready || 0 };
+  labels(); (async () => { await setSource(await E.demo()); })().catch((e) => status("start failed: " + e.message));
+})();
+</script>
